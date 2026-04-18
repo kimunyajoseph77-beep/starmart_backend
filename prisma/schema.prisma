@@ -1,0 +1,329 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// STARMART POS — Prisma Schema (PostgreSQL)
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── ENUMS ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  cashier
+  manager
+  admin
+}
+
+enum PaymentMethod {
+  cash
+  card
+  mobile
+}
+
+enum OrderStatus {
+  completed
+  refunded
+  voided
+}
+
+enum StockStatus {
+  in_stock
+  low_stock
+  out_of_stock
+}
+
+enum TransferStatus {
+  pending
+  approved
+  rejected
+}
+
+enum RefundMethod {
+  cash
+  mobile
+  store_credit
+}
+
+enum RefundStatus {
+  approved
+  rejected
+}
+
+// ── USERS ────────────────────────────────────────────────────────────────────
+
+model User {
+  id                Int       @id @default(autoincrement())
+  name              String
+  email             String    @unique
+  passwordHash      String    @map("password_hash")
+  role              Role      @default(cashier)
+  isActive          Boolean   @default(true)  @map("is_active")
+  branchId          Int?      @map("branch_id")
+  phone             String?
+  twoFaEnabled      Boolean   @default(false) @map("two_fa_enabled")
+  twoFaCode         String?   @map("two_fa_code")
+  twoFaExpires      DateTime? @map("two_fa_expires")
+  lastLoginAt       DateTime? @map("last_login_at")
+  resetToken        String?   @map("reset_token")
+  resetTokenExpires DateTime? @map("reset_token_expires")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt      @map("updated_at")
+
+  branch            Branch?         @relation(fields: [branchId],    references: [id])
+  orders            Order[]
+  auditLogs         AuditLog[]
+  transfersCreated  StockTransfer[] @relation("TransferCreatedBy")
+  transfersApproved StockTransfer[] @relation("TransferApprovedBy")
+  refundsProcessed  Refund[]        @relation("RefundsProcessed")
+
+  @@map("users")
+}
+
+// ── CATEGORIES ───────────────────────────────────────────────────────────────
+
+model Category {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+
+  products Product[]
+
+  @@map("categories")
+}
+
+// ── PRODUCTS ─────────────────────────────────────────────────────────────────
+
+model Product {
+  id         Int      @id @default(autoincrement())
+  name       String
+  sku        String   @unique
+  barcode    String   @unique
+  emoji      String   @default("📦")
+  image      String?  @db.Text
+  price      Decimal  @db.Decimal(10, 2)
+  costPrice  Decimal  @default(0) @db.Decimal(10, 2) @map("cost_price")
+  stock      Int      @default(0)
+  minStock   Int      @default(5) @map("min_stock")
+  categoryId Int      @map("category_id")
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt      @map("updated_at")
+
+  category    Category        @relation(fields: [categoryId], references: [id])
+  orderItems  OrderItem[]
+  branchStock BranchProduct[]
+  transfers   StockTransfer[]
+  refundItems RefundItem[]
+
+  @@map("products")
+}
+
+// ── BRANCH PRODUCT (per-branch stock) ────────────────────────────────────────
+
+model BranchProduct {
+  id        Int @id @default(autoincrement())
+  branchId  Int @map("branch_id")
+  productId Int @map("product_id")
+  stock     Int @default(0)
+  minStock  Int @default(5) @map("min_stock")
+
+  branch  Branch  @relation(fields: [branchId],  references: [id])
+  product Product @relation(fields: [productId], references: [id])
+
+  @@unique([branchId, productId])
+  @@map("branch_products")
+}
+
+// ── CUSTOMERS ────────────────────────────────────────────────────────────────
+
+model Customer {
+  id          Int       @id @default(autoincrement())
+  name        String
+  email       String?   @unique
+  phone       String?
+  points      Int       @default(0)
+  totalSpent  Decimal   @default(0) @db.Decimal(10, 2) @map("total_spent")
+  totalOrders Int       @default(0) @map("total_orders")
+  notes       String?
+  birthday    DateTime? @map("birthday")
+  tags        String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt      @map("updated_at")
+
+  orders Order[]
+
+  @@map("customers")
+}
+
+// ── COUPONS ──────────────────────────────────────────────────────────────────
+
+model Coupon {
+  id          Int       @id @default(autoincrement())
+  code        String    @unique
+  discountPct Int       @map("discount_pct")
+  isActive    Boolean   @default(true) @map("is_active")
+  usageCount  Int       @default(0)    @map("usage_count")
+  maxUses     Int?      @map("max_uses")
+  expiresAt   DateTime? @map("expires_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  orders Order[]
+
+  @@map("coupons")
+}
+
+// ── ORDERS ───────────────────────────────────────────────────────────────────
+
+model Order {
+  id             Int           @id @default(autoincrement())
+  orderNumber    String        @unique       @map("order_number")
+  customerId     Int?          @map("customer_id")
+  userId         Int?          @map("user_id")
+  branchId       Int?          @map("branch_id")
+  couponId       Int?          @map("coupon_id")
+  subtotal       Decimal       @db.Decimal(10, 2)
+  discountAmt    Decimal       @default(0) @db.Decimal(10, 2) @map("discount_amt")
+  taxAmt         Decimal       @db.Decimal(10, 2) @map("tax_amt")
+  total          Decimal       @db.Decimal(10, 2)
+  paymentMethod  PaymentMethod @map("payment_method")
+  cashTendered   Decimal?      @db.Decimal(10, 2) @map("cash_tendered")
+  changeAmt      Decimal?      @db.Decimal(10, 2) @map("change_amt")
+  pointsRedeemed Int           @default(0)  @map("points_redeemed")
+  status         OrderStatus   @default(completed)
+  notes          String?
+  createdAt      DateTime      @default(now()) @map("created_at")
+
+  customer   Customer?   @relation(fields: [customerId], references: [id])
+  user       User?       @relation(fields: [userId],     references: [id])
+  branch     Branch?     @relation(fields: [branchId],   references: [id])
+  coupon     Coupon?     @relation(fields: [couponId],   references: [id])
+  orderItems OrderItem[]
+  refunds    Refund[]
+
+  @@map("orders")
+}
+
+// ── ORDER ITEMS ──────────────────────────────────────────────────────────────
+
+model OrderItem {
+  id        Int     @id @default(autoincrement())
+  orderId   Int     @map("order_id")
+  productId Int     @map("product_id")
+  quantity  Int
+  unitPrice Decimal @db.Decimal(10, 2) @map("unit_price")
+  subtotal  Decimal @db.Decimal(10, 2)
+
+  order       Order        @relation(fields: [orderId],   references: [id])
+  product     Product      @relation(fields: [productId], references: [id])
+  refundItems RefundItem[]
+
+  @@map("order_items")
+}
+
+// ── BRANCHES ─────────────────────────────────────────────────────────────────
+
+model Branch {
+  id        Int      @id @default(autoincrement())
+  name      String                                   // NOT unique — same name OK at different locations
+  location  String?
+  phone     String?
+  isHQ      Boolean  @default(false) @map("is_hq")  // Admin designates one branch as Headquarters
+  isActive  Boolean  @default(true)  @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  users         User[]
+  orders        Order[]
+  branchStock   BranchProduct[]
+  transfersFrom StockTransfer[] @relation("TransferFrom")
+  transfersTo   StockTransfer[] @relation("TransferTo")
+  refunds       Refund[]
+
+  @@map("branches")
+}
+
+// ── STOCK TRANSFERS ───────────────────────────────────────────────────────────
+
+model StockTransfer {
+  id           Int            @id @default(autoincrement())
+  fromBranchId Int            @map("from_branch_id")
+  toBranchId   Int            @map("to_branch_id")
+  productId    Int            @map("product_id")
+  quantity     Int
+  notes        String?
+  status       TransferStatus @default(pending)
+  createdById  Int?           @map("created_by_id")
+  approvedById Int?           @map("approved_by_id")
+  approvedAt   DateTime?      @map("approved_at")
+  createdAt    DateTime       @default(now()) @map("created_at")
+
+  fromBranch Branch  @relation("TransferFrom",       fields: [fromBranchId], references: [id])
+  toBranch   Branch  @relation("TransferTo",         fields: [toBranchId],   references: [id])
+  product    Product @relation(fields: [productId],  references: [id])
+  createdBy  User?   @relation("TransferCreatedBy",  fields: [createdById],  references: [id])
+  approvedBy User?   @relation("TransferApprovedBy", fields: [approvedById], references: [id])
+
+  @@map("stock_transfers")
+}
+
+// ── AUDIT LOG ────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int?     @map("user_id")
+  action    String
+  tableName String   @map("table_name")
+  recordId  Int?     @map("record_id")
+  oldValues Json?    @map("old_values")
+  newValues Json?    @map("new_values")
+  ipAddress String?  @map("ip_address")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@map("audit_logs")
+}
+
+// ── REFUNDS ───────────────────────────────────────────────────────────────────
+
+model Refund {
+  id            Int          @id @default(autoincrement())
+  refundNumber  String       @unique      @map("refund_number")
+  orderId       Int          @map("order_id")
+  processedById Int?         @map("processed_by_id")
+  branchId      Int?         @map("branch_id")
+  reason        String
+  refundMethod  RefundMethod @map("refund_method")
+  amount        Decimal      @db.Decimal(10, 2)
+  notes         String?
+  status        RefundStatus @default(approved)
+  createdAt     DateTime     @default(now()) @map("created_at")
+
+  order       Order        @relation(fields: [orderId],       references: [id])
+  processedBy User?        @relation("RefundsProcessed",      fields: [processedById], references: [id])
+  branch      Branch?      @relation(fields: [branchId],      references: [id])
+  items       RefundItem[]
+
+  @@map("refunds")
+}
+
+model RefundItem {
+  id          Int     @id @default(autoincrement())
+  refundId    Int     @map("refund_id")
+  orderItemId Int     @map("order_item_id")
+  productId   Int     @map("product_id")
+  quantity    Int
+  unitPrice   Decimal @db.Decimal(10, 2) @map("unit_price")
+  subtotal    Decimal @db.Decimal(10, 2)
+
+  refund    Refund    @relation(fields: [refundId],    references: [id])
+  orderItem OrderItem @relation(fields: [orderItemId], references: [id])
+  product   Product   @relation(fields: [productId],   references: [id])
+
+  @@map("refund_items")
+}
+
