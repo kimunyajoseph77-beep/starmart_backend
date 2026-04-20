@@ -6,7 +6,8 @@ const express    = require("express");
 const cors       = require("cors");
 const helmet     = require("helmet");
 const morgan     = require("morgan");
-const rateLimit  = require("express-rate-limit");
+const rateLimit   = require("express-rate-limit");
+const cookieParser = require("cookie-parser");
 const { PrismaClient } = require("@prisma/client");
 
 const authRoutes      = require("./routes/auth");
@@ -17,6 +18,7 @@ const reportRoutes    = require("./routes/reports");
 const couponRoutes    = require("./routes/coupons");
 const userRoutes      = require("./routes/users");
 const mpesaRoutes     = require("./routes/mpesa");
+const barcodeRoutes   = require("./routes/barcode");
 const branchRoutes    = require("./routes/branches");
 const refundRoutes    = require("./routes/refunds");
 const securityRoutes  = require("./routes/security");
@@ -86,6 +88,7 @@ app.use("/api/refunds",   refundRoutes);
 app.use("/api/security",  securityRoutes);
 app.use("/api/settings",  settingsRoutes);
 app.use("/api/mpesa",     mpesaRoutes);
+app.use("/api/barcode",   barcodeRoutes);
 
 // ── 404 & ERROR HANDLERS ─────────────────────────────────────────────────────
 

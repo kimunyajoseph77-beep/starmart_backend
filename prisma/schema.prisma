@@ -69,6 +69,7 @@ model User {
   twoFaCode         String?   @map("two_fa_code")
   twoFaExpires      DateTime? @map("two_fa_expires")
   lastLoginAt       DateTime? @map("last_login_at")
+  tokenVersion      Int       @default(0)   // bump on logout to revoke all refresh tokens
   resetToken        String?   @map("reset_token")
   resetTokenExpires DateTime? @map("reset_token_expires")
   createdAt         DateTime  @default(now()) @map("created_at")

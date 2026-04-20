@@ -1,7 +1,10 @@
 // backend/middleware/auth.js
 const jwt = require("jsonwebtoken");
 
-const JWT_SECRET = process.env.JWT_SECRET || "change_this_in_production";
+const JWT_SECRET         = process.env.JWT_SECRET         || "change_this_in_production";
+const REFRESH_SECRET     = process.env.REFRESH_SECRET      || "refresh_secret_change_this";
+const ACCESS_TOKEN_TTL   = "15m";   // short-lived access token
+const REFRESH_TOKEN_TTL  = "7d";    // refresh token
 
 function authenticate(req, res, next) {
   const header = req.headers.authorization;
@@ -11,10 +14,13 @@ function authenticate(req, res, next) {
   const token = header.split(" ")[1];
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded; // { id, email, role, name, branchId }
+    req.user = decoded;
     next();
   } catch (err) {
-    return res.status(401).json({ error: "Invalid or expired token" });
+    // Give the client a specific error so it knows to try refreshing
+    if (err.name === "TokenExpiredError")
+      return res.status(401).json({ error: "Token expired", code: "TOKEN_EXPIRED" });
+    return res.status(401).json({ error: "Invalid token" });
   }
 }
 
@@ -31,18 +37,45 @@ function requireRole(roles) {
   };
 }
 
+// Short-lived access token (15 min)
 function generateToken(user) {
   return jwt.sign(
-    {
-      id:       user.id,
-      email:    user.email,
-      role:     user.role,
-      name:     user.name,
-      branchId: user.branchId ?? null,  // ← included in every token
-    },
+    { id: user.id, email: user.email, role: user.role, name: user.name, branchId: user.branchId ?? null },
     JWT_SECRET,
-    { expiresIn: "7d" }
+    { expiresIn: ACCESS_TOKEN_TTL }
   );
 }
 
-module.exports = { authenticate, requireRole, generateToken };
+// Long-lived refresh token (7 days) — stored in httpOnly cookie
+function generateRefreshToken(user) {
+  return jwt.sign(
+    { id: user.id, version: user.tokenVersion ?? 0 },
+    REFRESH_SECRET,
+    { expiresIn: REFRESH_TOKEN_TTL }
+  );
+}
+
+function verifyRefreshToken(token) {
+  return jwt.verify(token, REFRESH_SECRET);
+}
+
+// Set httpOnly cookie for refresh token
+function setRefreshCookie(res, token) {
+  res.cookie("refresh_token", token, {
+    httpOnly:  true,
+    secure:    process.env.NODE_ENV === "production",
+    sameSite:  "Strict",
+    maxAge:    7 * 24 * 60 * 60 * 1000, // 7 days ms
+    path:      "/api/auth/refresh",       // only sent to refresh endpoint
+  });
+}
+
+function clearRefreshCookie(res) {
+  res.clearCookie("refresh_token", { path: "/api/auth/refresh" });
+}
+
+module.exports = {
+  authenticate, requireRole,
+  generateToken, generateRefreshToken,
+  verifyRefreshToken, setRefreshCookie, clearRefreshCookie,
+};

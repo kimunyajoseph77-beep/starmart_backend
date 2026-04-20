@@ -10,7 +10,7 @@
 
 const express = require("express");
 const bcrypt  = require("bcryptjs");
-const { authenticate, requireRole, generateToken } = require("../middleware/auth");
+const { authenticate, requireRole, generateToken, generateRefreshToken, verifyRefreshToken, setRefreshCookie, clearRefreshCookie } = require("../middleware/auth");
 
 const router = express.Router();
 
@@ -137,8 +137,10 @@ router.post("/setup", async (req, res) => {
     await req.prisma.auditLog.create({
       data: { userId: user.id, action: "INITIAL_SETUP", tableName: "users", recordId: user.id, ipAddress: req.ip },
     });
-    const token = generateToken(user);
-    res.status(201).json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role, branchId: user.branchId ?? null } });
+    const accessToken  = generateToken(user);
+    const refreshToken = generateRefreshToken(user);
+    setRefreshCookie(res, refreshToken);
+    res.status(201).json({ token: accessToken, user: { id: user.id, name: user.name, email: user.email, role: user.role, branchId: user.branchId ?? null } });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -200,8 +202,10 @@ router.post("/login", async (req, res) => {
       const maskedEmail  = user.email.replace(/(.{1,3}).*(@.*)/, "$1***$2");
       return res.json({ requires2FA: true, pendingToken, maskedEmail, devCode });
     }
-    const token = generateToken(user);
-    res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role, branchId: user.branchId ?? null } });
+    const accessToken  = generateToken(user);
+    const refreshToken = generateRefreshToken(user);
+    setRefreshCookie(res, refreshToken);
+    res.json({ token: accessToken, user: { id: user.id, name: user.name, email: user.email, role: user.role, branchId: user.branchId ?? null } });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -227,8 +231,10 @@ router.post("/verify-2fa", async (req, res) => {
       return res.status(401).json({ error: "Code has expired. Please log in again." });
 
     await req.prisma.user.update({ where: { id: user.id }, data: { twoFaCode: null, twoFaExpires: null } });
-    const token = generateToken(user);
-    res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role, branchId: user.branchId ?? null } });
+    const accessToken  = generateToken(user);
+    const refreshToken = generateRefreshToken(user);
+    setRefreshCookie(res, refreshToken);
+    res.json({ token: accessToken, user: { id: user.id, name: user.name, email: user.email, role: user.role, branchId: user.branchId ?? null } });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -331,8 +337,10 @@ router.post("/signup", async (req, res) => {
       });
     }
 
-    const token = generateToken(user);
-    res.status(201).json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role, branchId: user.branchId ?? null } });
+    const accessToken  = generateToken(user);
+    const refreshToken = generateRefreshToken(user);
+    setRefreshCookie(res, refreshToken);
+    res.status(201).json({ token: accessToken, user: { id: user.id, name: user.name, email: user.email, role: user.role, branchId: user.branchId ?? null } });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -514,6 +522,42 @@ router.post("/disable-2fa", authenticate, async (req, res) => {
 });
 
 
+// POST /api/auth/refresh  ── issue new access token using httpOnly refresh cookie
+router.post("/refresh", async (req, res) => {
+  try {
+    const token = req.cookies?.refresh_token;
+    if (!token) return res.status(401).json({ error: "No refresh token", code: "NO_REFRESH" });
+
+    let decoded;
+    try { decoded = verifyRefreshToken(token); }
+    catch { return res.status(401).json({ error: "Refresh token expired or invalid", code: "REFRESH_EXPIRED" }); }
+
+    // Load user and validate token version (invalidates old tokens after logout)
+    const user = await req.prisma.user.findUnique({ where: { id: decoded.id } });
+    if (!user || !user.isActive) return res.status(401).json({ error: "User not found" });
+    if ((user.tokenVersion ?? 0) !== (decoded.version ?? 0))
+      return res.status(401).json({ error: "Token has been revoked", code: "REVOKED" });
+
+    // Rotate: issue new access token + new refresh token
+    const accessToken  = generateToken(user);
+    const refreshToken = generateRefreshToken(user);
+    setRefreshCookie(res, refreshToken);
+    res.json({ token: accessToken });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/auth/logout  ── revoke refresh token
+router.post("/logout", authenticate, async (req, res) => {
+  try {
+    // Bump tokenVersion so all existing refresh tokens are invalid
+    await req.prisma.user.update({
+      where: { id: req.user.id },
+      data:  { tokenVersion: { increment: 1 } },
+    }).catch(() => {});
+    clearRefreshCookie(res);
+    res.json({ message: "Logged out" });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 
 module.exports = router;
