@@ -9,9 +9,8 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  url      = env("DATABASE_URL")
 }
-
-// ── ENUMS ────────────────────────────────────────────────────────────────────
 
 enum Role {
   cashier
@@ -23,18 +22,13 @@ enum PaymentMethod {
   cash
   card
   mobile
+  credit          // ← NEW: sell on credit
 }
 
 enum OrderStatus {
   completed
   refunded
   voided
-}
-
-enum StockStatus {
-  in_stock
-  low_stock
-  out_of_stock
 }
 
 enum TransferStatus {
@@ -54,7 +48,13 @@ enum RefundStatus {
   rejected
 }
 
-// ── USERS ────────────────────────────────────────────────────────────────────
+// NEW ─────────────────────────────────────────────────────────────────────────
+enum CreditStatus {
+  open         // account in good standing, balance > 0
+  partial      // some payments made but not fully settled
+  paid         // balance is zero
+  written_off  // debt deemed uncollectable
+}
 
 model User {
   id                Int       @id @default(autoincrement())
@@ -69,23 +69,21 @@ model User {
   twoFaCode         String?   @map("two_fa_code")
   twoFaExpires      DateTime? @map("two_fa_expires")
   lastLoginAt       DateTime? @map("last_login_at")
-  tokenVersion      Int       @default(0)   // bump on logout to revoke all refresh tokens
   resetToken        String?   @map("reset_token")
   resetTokenExpires DateTime? @map("reset_token_expires")
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt      @map("updated_at")
 
-  branch            Branch?         @relation(fields: [branchId],    references: [id])
-  orders            Order[]
-  auditLogs         AuditLog[]
-  transfersCreated  StockTransfer[] @relation("TransferCreatedBy")
-  transfersApproved StockTransfer[] @relation("TransferApprovedBy")
-  refundsProcessed  Refund[]        @relation("RefundsProcessed")
+  branch               Branch?              @relation(fields: [branchId], references: [id])
+  orders               Order[]
+  auditLogs            AuditLog[]
+  transfersCreated     StockTransfer[]      @relation("TransferCreatedBy")
+  transfersApproved    StockTransfer[]      @relation("TransferApprovedBy")
+  refundsProcessed     Refund[]             @relation("RefundsProcessed")
+  creditTransactions   CreditTransaction[]  @relation("CreditTxnUser")  // NEW
 
   @@map("users")
 }
-
-// ── CATEGORIES ───────────────────────────────────────────────────────────────
 
 model Category {
   id        Int      @id @default(autoincrement())
@@ -96,8 +94,6 @@ model Category {
 
   @@map("categories")
 }
-
-// ── PRODUCTS ─────────────────────────────────────────────────────────────────
 
 model Product {
   id         Int      @id @default(autoincrement())
@@ -124,8 +120,6 @@ model Product {
   @@map("products")
 }
 
-// ── BRANCH PRODUCT (per-branch stock) ────────────────────────────────────────
-
 model BranchProduct {
   id        Int @id @default(autoincrement())
   branchId  Int @map("branch_id")
@@ -139,8 +133,6 @@ model BranchProduct {
   @@unique([branchId, productId])
   @@map("branch_products")
 }
-
-// ── CUSTOMERS ────────────────────────────────────────────────────────────────
 
 model Customer {
   id          Int       @id @default(autoincrement())
@@ -156,12 +148,11 @@ model Customer {
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt      @map("updated_at")
 
-  orders Order[]
+  orders        Order[]
+  creditAccount CreditAccount?  // NEW — one-to-one
 
   @@map("customers")
 }
-
-// ── COUPONS ──────────────────────────────────────────────────────────────────
 
 model Coupon {
   id          Int       @id @default(autoincrement())
@@ -177,8 +168,6 @@ model Coupon {
 
   @@map("coupons")
 }
-
-// ── ORDERS ───────────────────────────────────────────────────────────────────
 
 model Order {
   id             Int           @id @default(autoincrement())
@@ -205,11 +194,10 @@ model Order {
   coupon     Coupon?     @relation(fields: [couponId],   references: [id])
   orderItems OrderItem[]
   refunds    Refund[]
+  creditTxns CreditTransaction[] // NEW — debit transactions linked to this order
 
   @@map("orders")
 }
-
-// ── ORDER ITEMS ──────────────────────────────────────────────────────────────
 
 model OrderItem {
   id        Int     @id @default(autoincrement())
@@ -226,14 +214,12 @@ model OrderItem {
   @@map("order_items")
 }
 
-// ── BRANCHES ─────────────────────────────────────────────────────────────────
-
 model Branch {
   id        Int      @id @default(autoincrement())
-  name      String                                   // NOT unique — same name OK at different locations
+  name      String
   location  String?
   phone     String?
-  isHQ      Boolean  @default(false) @map("is_hq")  // Admin designates one branch as Headquarters
+  isHQ      Boolean  @default(false) @map("is_hq")
   isActive  Boolean  @default(true)  @map("is_active")
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -246,8 +232,6 @@ model Branch {
 
   @@map("branches")
 }
-
-// ── STOCK TRANSFERS ───────────────────────────────────────────────────────────
 
 model StockTransfer {
   id           Int            @id @default(autoincrement())
@@ -271,8 +255,6 @@ model StockTransfer {
   @@map("stock_transfers")
 }
 
-// ── AUDIT LOG ────────────────────────────────────────────────────────────────
-
 model AuditLog {
   id        Int      @id @default(autoincrement())
   userId    Int?     @map("user_id")
@@ -288,8 +270,6 @@ model AuditLog {
 
   @@map("audit_logs")
 }
-
-// ── REFUNDS ───────────────────────────────────────────────────────────────────
 
 model Refund {
   id            Int          @id @default(autoincrement())
@@ -328,3 +308,43 @@ model RefundItem {
   @@map("refund_items")
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CREDIT MODELS (NEW)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// One credit account per customer.  Holds the running balance + limit.
+model CreditAccount {
+  id           Int           @id @default(autoincrement())
+  customerId   Int           @unique     @map("customer_id")
+  creditLimit  Decimal       @default(99999999) @db.Decimal(12, 2) @map("credit_limit")
+  balance      Decimal       @default(0)    @db.Decimal(10, 2) // amount owed
+  status       CreditStatus  @default(open)
+  notes        String?
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt      @map("updated_at")
+
+  customer     Customer            @relation(fields: [customerId], references: [id])
+  transactions CreditTransaction[]
+
+  @@map("credit_accounts")
+}
+
+// Immutable append-only ledger row for every financial event on the account.
+model CreditTransaction {
+  id           Int      @id @default(autoincrement())
+  accountId    Int      @map("account_id")
+  orderId      Int?     @map("order_id")
+  userId       Int?     @map("user_id")
+  type         String   // 'debit' | 'payment' | 'adjustment' | 'writeoff'
+  amount       Decimal  @db.Decimal(10, 2)
+  balanceAfter Decimal  @db.Decimal(10, 2) @map("balance_after")
+  note         String?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  account CreditAccount @relation(fields: [accountId], references: [id])
+  order   Order?        @relation(fields: [orderId],   references: [id])
+  user    User?         @relation("CreditTxnUser", fields: [userId], references: [id])
+
+  @@map("credit_transactions")
+}
